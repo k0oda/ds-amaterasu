@@ -3,10 +3,10 @@ import json
 import os
 
 from discord import app_commands
-from discord.ext import commands
 from asyncio import sleep
 from datetime import datetime
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 
@@ -20,6 +20,10 @@ tree = app_commands.CommandTree(client)
 
 REGULATIONS_PATH = 'regulations.json'
 ARMY_REGULATIONS_PATH = 'army_regulations.json'
+
+NOTIFICATIONS_FILENAME = 'notifications'
+TICKETS_FILENAME = 'tickets'
+TICKET_FORMS_FILENAME = 'ticket_forms'
 
 TOKEN = os.getenv("TOKEN")
 GUILD = 730393851524808764
@@ -64,6 +68,30 @@ async def update_members_counter(member):
     await sleep(60*10)
     channel = client.get_channel(MEMBERS_COUNTER_CHANNEL)
     await channel.edit(name=f'Всего Участников: {member.guild.member_count}')
+
+
+async def save_view(view_type: str, views: dict):
+    file_path = Path.cwd().absolute() / 'db' / f'{view_type}.json'
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.touch(exist_ok=True)
+    with open(file_path, 'w') as f:
+        json.dump(views, f)
+
+
+def load_view(view_type: str):
+    try:
+        file_path = Path.cwd().absolute() / 'db' / f'{view_type}.json'
+        with open(file_path, 'r') as f:
+            if f.read(1) == '':
+                print("Файл пуст, возвращаем пустой список")
+                return []
+            f.seek(0)
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Ошибка чтения JSON: {e}")
+        return []
 
 # Views
 #
@@ -115,6 +143,7 @@ class TicketNotificationView(discord.ui.View):
         self.add_item(see_button)
         self.add_item(close_button)
 
+
 class TicketView(discord.ui.View):
     def __init__(self, notification: discord.Message):
         super().__init__()
@@ -150,7 +179,7 @@ class TicketView(discord.ui.View):
             self.close_confirmation_message = await i.original_response()
 
         async def call_team(i: discord.Interaction):
-            embed = discord.Embed(description=f'🔔 {i.user.mention} has called the team', color=WARNING_COLOR)
+            embed = discord.Embed(description=f'🔔 {i.user.mention} вызвал Руководство.', color=WARNING_COLOR)
             roles_mention = ' '.join(f'<@&{role}>' for role in TICKETS_RESPONDER_ROLES)
             await i.channel.send(roles_mention, embed=embed, delete_after=20)
             await i.response.defer()
@@ -169,6 +198,7 @@ class TicketView(discord.ui.View):
 
         self.add_item(close_button)
         self.add_item(call_button)
+
 
 class TicketFormView(discord.ui.View):
     def __init__(self, label: str, style: discord.ButtonStyle, channel_prefix: str):
@@ -206,10 +236,23 @@ class TicketFormView(discord.ui.View):
             notification_embed.set_thumbnail(url=i.user.avatar)
             notification = await notifications.send(embed=notification_embed, view=notification_view)
 
+            notification_views.append({
+                'message_id': notification.id,
+                'channel_id': notifications.id,
+                'ticket_channel_id': channel.id,
+            })
+            await save_view(NOTIFICATIONS_FILENAME, notification_views)
+
             embed = discord.Embed(title=f'Hi {i.user.name}!', description='Спасибо за отправку тикета!\nРуководство скоро свяжется с вами.\nПожалуйста, в подробностях распишите суть вашего обращения.\n\nЕсли вам никто не ответил вы можете нажать кнопку `🔔 Вызвать Руководство`', color=INVISIBLE_COLOR)
             embed.set_thumbnail(url=i.user.avatar)
             ticket_view = TicketView(notification=notification)
             message = await channel.send(i.user.mention, embed=embed, view=ticket_view)
+            ticket_views.append({
+                'message_id': message.id,
+                'channel_id': channel.id,
+                'notification_id': notification.id,
+            })
+            await save_view(TICKETS_FILENAME, ticket_views)
             await message.pin()
             await i.response.send_message(f'Канал {channel.mention} создан.', delete_after=15, ephemeral=True)
 
@@ -335,10 +378,44 @@ class SymbolicsModal(discord.ui.Modal):
 # Events
 #
 
+
+notification_views = load_view(NOTIFICATIONS_FILENAME)
+ticket_views = load_view(TICKETS_FILENAME)
+ticket_form_views = load_view(TICKET_FORMS_FILENAME)
+
+
 @client.event
 async def on_ready():
     guild = client.get_guild(GUILD)
     await tree.sync(guild=guild)
+    for view_data in notification_views:
+        try:
+            channel = client.get_channel(view_data['channel_id'])
+            if channel:
+                message = await channel.fetch_message(view_data['message_id'])
+                view = TicketNotificationView(ticket_channel_id=view_data['ticket_channel_id'])
+                await message.edit(view=view)
+        except discord.NotFound:
+            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
+    for view_data in ticket_views:
+        try:
+            channel = client.get_channel(view_data['channel_id'])
+            if channel:
+                message = await channel.fetch_message(view_data['message_id'])
+                notification = await channel.fetch_message(view_data['notification_id'])
+                view = TicketView(notification=notification)
+                await message.edit(view=view)
+        except discord.NotFound:
+            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
+    for view_data in ticket_form_views:
+        try:
+            channel = client.get_channel(view_data['channel_id'])
+            if channel:
+                message = await channel.fetch_message(view_data['message_id'])
+                view = TicketFormView(label=view_data["label"], style=discord.ButtonStyle[view_data['style']], channel_prefix=view_data['channel_prefix'])
+                await message.edit(view=view)
+        except discord.NotFound:
+            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
     print(guild.name)
 
 @client.event
@@ -363,8 +440,11 @@ async def hello(i: discord.Interaction):
 
 
 @tree.command(name='post_regulations', description='Удаляет предыдущий устав, форматирует и отправляет новый', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 async def post_regulations(i: discord.Interaction):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return
+
     rules_file = open(REGULATIONS_PATH, 'r')
     rules = json.load(rules_file)
     rules_file.close()
@@ -386,8 +466,11 @@ async def post_regulations(i: discord.Interaction):
 
 
 @tree.command(name='post_army_regulations', description='Удаляет предыдущий армейский устав, форматирует и отправляет новый', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 async def post_army_regulations(i: discord.Interaction):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return
+
     rules_file = open(ARMY_REGULATIONS_PATH, 'r')
     rules = json.load(rules_file)
     rules_file.close()
@@ -409,7 +492,6 @@ async def post_army_regulations(i: discord.Interaction):
 
 
 @tree.command(name='post_ticket_form', description='Отправляет новую форму для тикетов', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 @app_commands.choices(style=[
     app_commands.Choice(name='Primary', value='primary'),
     app_commands.Choice(name='Secondary', value='secondary'),
@@ -422,43 +504,69 @@ async def post_ticket_form(
         style: app_commands.Choice[str],
         channel_prefix: str
 ):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return
+
     embed = discord.Embed(
         title=title,
         description=description,
         color=INVISIBLE_COLOR,
     )
     channel = client.get_channel(TICKET_FORMS_CHANNEL)
-    view = TicketFormView(label='Отправить', style=discord.ButtonStyle[style.value], channel_prefix=channel_prefix)
+    form_label = 'Отправить'
+    form_style = discord.ButtonStyle[style.value]
+    form_channel_prefix = channel_prefix
+    view = TicketFormView(label=form_label, style=form_style, channel_prefix=form_channel_prefix)
     message = await channel.send(embed=embed, view=view)
+
+    ticket_form_views.append({
+        'message_id': message.id,
+        'channel_id': channel.id,
+        'label': form_label,
+        'style': form_style.name,
+        'channel_prefix': form_channel_prefix,
+    })
+    await save_view(TICKET_FORMS_FILENAME, ticket_form_views)
+
     await i.response.send_message(f'Форма [{title}]({message.jump_url}) была создана.', delete_after=3, ephemeral=True)
 
 
 @tree.command(name='post_order', description='Отправляет новый указ', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 async def post_order(
     i: discord.Interaction,
     image_url: str = None,
 ):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return
+
     modal = OrderModal(image_url)
     await i.response.send_modal(modal)
 
 
 @tree.command(name='post_news', description='Отправляет новость', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 async def post_news(
     i: discord.Interaction,
     image_url: str = None,
 ):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return
+
     modal = NewsModal(image_url)
     await i.response.send_modal(modal)
 
 
 @tree.command(name='post_symbolics', description='Добавляет новую символику', guild=discord.Object(id=GUILD))
-@commands.has_any_role(*ADMIN_ROLES)
 async def post_symbolics(
     i: discord.Interaction,
     image_url: str = None,
 ):
+    if not i.user.guild_permissions.administrator:
+        await i.response.send_message('У вас недостаточно прав для использования этой команды.', delete_after=3, ephemeral=True)
+        return    
+
     modal = SymbolicsModal(image_url)
     await i.response.send_modal(modal)
 
