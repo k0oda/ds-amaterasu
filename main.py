@@ -5,10 +5,7 @@ import os
 from discord import app_commands
 from asyncio import sleep
 from datetime import datetime
-from dotenv import load_dotenv
 from pathlib import Path
-
-load_dotenv()
 
 intents = discord.Intents.default()
 intents.guild_messages = True

@@ -1,0 +1,9 @@
+services:
+  ds-amaterasu:
+    build: .
+    container_name: ds-amaterasu
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    restart: unless-stopped
