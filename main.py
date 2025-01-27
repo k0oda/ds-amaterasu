@@ -1,11 +1,23 @@
 import discord
 import json
-import os
+import sys
+import traceback
+import logging
 
 from discord import app_commands
 from asyncio import sleep
 from datetime import datetime
 from pathlib import Path
+
+from settings import *
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+_logger = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
 intents.guild_messages = True
@@ -14,49 +26,6 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-
-REGULATIONS_PATH = 'regulations.json'
-ARMY_REGULATIONS_PATH = 'army_regulations.json'
-
-NOTIFICATIONS_FILENAME = 'notifications'
-TICKETS_FILENAME = 'tickets'
-TICKET_FORMS_FILENAME = 'ticket_forms'
-
-TOKEN = os.getenv("TOKEN")
-GUILD = 730393851524808764
-
-# Colors
-#
-
-WARNING_COLOR = 0xf3ae19
-INVISIBLE_COLOR = 0x2e2b2b
-
-# Roles
-#
-
-ADMIN_ROLES = (849987497400467466, 892335197410951179)
-TICKETS_RESPONDER_ROLES = (849987497400467466, 892335197410951179, 1077221347970777140, 1076958728399618098)
-
-COLOR_OVERRIDE_ROLE = 877250538134175774
-STATUS_ROLE = 877240157542170684
-ACHIEVEMENTS_ROLE = 877238290871373855
-TECH_ROLE = 877242944103530547
-
-# Channels
-#
-
-MEMBERS_COUNTER_CHANNEL = 1331361549046255737
-CLAN_MEBMERS_COUNTER_CHANNEL = 1331361710824751244
-
-TICKETS_CATEGORY = 1331362077616377957
-TICKET_FORMS_CHANNEL = 1331362350497792123
-
-NOTIFICATIONS_CHANNEL = 1331362764584783945
-ORDERS_CHANNEL = 1331355614386978947
-NEWS_CHANNEL = 1331353827017752688
-SYMBOLICS_CHANNEL = 1331353039868788776
-REGULATIONS_CHANNEL = 1331355456605650964
-ARMY_REGULATIONS_CHANNEL = 1076969784182325410
 
 # Service Functions
 #
@@ -67,35 +36,47 @@ async def update_members_counter(member):
     await channel.edit(name=f'Всего Участников: {member.guild.member_count}')
 
 
-async def save_view(view_type: str, views: dict):
-    file_path = Path.cwd().absolute() / 'db' / f'{view_type}.json'
+async def save_view(view_filename: str, views: dict):
+    file_path = Path.cwd().absolute() / 'db' / f'{view_filename}.json'
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.touch(exist_ok=True)
     with open(file_path, 'w') as f:
         json.dump(views, f)
 
 
-def load_view(view_type: str):
+async def delete_view(view_filename: str, view_ids: list[int]):
+    file_path = Path.cwd().absolute() / 'db' / f'{view_filename}.json'
+    with open(file_path, 'r') as f:
+        views = json.load(f)
+    for view in views:
+        if view['message_id'] in view_ids:
+            views.remove(view)
+            break
+    with open(file_path, 'w') as f:
+        json.dump(views, f)
+
+
+def load_view(view_filename: str):
     try:
-        file_path = Path.cwd().absolute() / 'db' / f'{view_type}.json'
+        file_path = Path.cwd().absolute() / 'db' / f'{view_filename}.json'
         with open(file_path, 'r') as f:
             if f.read(1) == '':
-                print("Файл пуст, возвращаем пустой список")
+                _logger.info("Файл пуст, возвращаем пустой список")
                 return []
             f.seek(0)
             return json.load(f)
     except FileNotFoundError:
         return []
     except json.JSONDecodeError as e:
-        print(f"Ошибка чтения JSON: {e}")
+        _logger.info(f"Ошибка чтения JSON: {e}")
         return []
 
 # Views
 #
 
 class TicketNotificationView(discord.ui.View):
-    def __init__(self, ticket_channel_id: int):
-        super().__init__()
+    def __init__(self, ticket_channel_id: int, *args, **kwargs):
+        super().__init__(timeout=None)
         self.ticket_channel_id = ticket_channel_id
         self.add_buttons()
 
@@ -142,10 +123,10 @@ class TicketNotificationView(discord.ui.View):
 
 
 class TicketView(discord.ui.View):
-    def __init__(self, notification: discord.Message):
-        super().__init__()
+    def __init__(self, notification_id: discord.Message, *args, **kwargs):
+        super().__init__(timeout=None)
         self.close_confirmation_message = None
-        self.notification = notification
+        self.notification = client.get_channel(NOTIFICATIONS_CHANNEL).get_partial_message(notification_id)
         self.add_buttons()
 
     def add_buttons(self):
@@ -198,10 +179,10 @@ class TicketView(discord.ui.View):
 
 
 class TicketFormView(discord.ui.View):
-    def __init__(self, label: str, style: discord.ButtonStyle, channel_prefix: str):
-        super().__init__()
+    def __init__(self, label: str, style: str, channel_prefix: str, *args, **kwargs):
+        super().__init__(timeout=None)
         self.label = label
-        self.style = style
+        self.style = discord.ButtonStyle[style]
         self.channel_prefix = channel_prefix
         self.add_buttons()
 
@@ -240,7 +221,7 @@ class TicketFormView(discord.ui.View):
             })
             await save_view(NOTIFICATIONS_FILENAME, notification_views)
 
-            embed = discord.Embed(title=f'Hi {i.user.name}!', description='Спасибо за отправку тикета!\nРуководство скоро свяжется с вами.\nПожалуйста, в подробностях распишите суть вашего обращения.\n\nЕсли вам никто не ответил вы можете нажать кнопку `🔔 Вызвать Руководство`', color=INVISIBLE_COLOR)
+            embed = discord.Embed(title=f'キヲツケ {i.user.name}!', description='Спасибо за отправку тикета!\nРуководство скоро свяжется с вами.\nПожалуйста, в подробностях распишите суть вашего обращения.\n\nЕсли вам никто не ответил вы можете нажать кнопку `🔔 Вызвать Руководство`', color=INVISIBLE_COLOR)
             embed.set_thumbnail(url=i.user.avatar)
             ticket_view = TicketView(notification=notification)
             message = await channel.send(i.user.mention, embed=embed, view=ticket_view)
@@ -384,36 +365,80 @@ ticket_form_views = load_view(TICKET_FORMS_FILENAME)
 @client.event
 async def on_ready():
     guild = client.get_guild(GUILD)
+    if not guild:
+        _logger.error(f"Сервер с ID {GUILD} не найден")
+        return
+
     await tree.sync(guild=guild)
-    for view_data in notification_views:
-        try:
-            channel = client.get_channel(view_data['channel_id'])
-            if channel:
+    _logger.info(f"Синхронизация команд завершена для сервера {guild.name}")
+
+    async def process_views(view_data_list: list, view_class: discord.ui.View, view_filename: str, **kwargs):
+        views_to_delete = []
+        for view_data in view_data_list:
+            try:
+                channel = client.get_channel(view_data['channel_id'])
+                if not channel:
+                    _logger.warning(f"Канал с ID {view_data['channel_id']} не найден")
+                    continue
+
                 message = await channel.fetch_message(view_data['message_id'])
-                view = TicketNotificationView(ticket_channel_id=view_data['ticket_channel_id'])
+                view = view_class(**view_data, **kwargs)
                 await message.edit(view=view)
-        except discord.NotFound:
-            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
-    for view_data in ticket_views:
-        try:
-            channel = client.get_channel(view_data['channel_id'])
-            if channel:
-                message = await channel.fetch_message(view_data['message_id'])
-                notification = await channel.fetch_message(view_data['notification_id'])
-                view = TicketView(notification=notification)
-                await message.edit(view=view)
-        except discord.NotFound:
-            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
-    for view_data in ticket_form_views:
-        try:
-            channel = client.get_channel(view_data['channel_id'])
-            if channel:
-                message = await channel.fetch_message(view_data['message_id'])
-                view = TicketFormView(label=view_data["label"], style=discord.ButtonStyle[view_data['style']], channel_prefix=view_data['channel_prefix'])
-                await message.edit(view=view)
-        except discord.NotFound:
-            print(f'Сообщение с ID {view_data["message_id"]} не найдено.')
-    print(guild.name)
+                _logger.info(f"View восстановлено для сообщения {view_data['message_id']} в канале {channel.name}")
+                await sleep(3)
+            except discord.NotFound:
+                _logger.warning(f'Сообщение с ID {view_data["message_id"]} не найдено.')
+                views_to_delete.append(view_data['message_id'])
+            except discord.HTTPException as e:
+                _logger.error(f'Ошибка при редактировании сообщения: {e}')
+        await delete_view(view_filename, views_to_delete)
+
+    await process_views(
+        notification_views,
+        TicketNotificationView,
+        NOTIFICATIONS_FILENAME,
+    )
+
+    await process_views(
+        ticket_views,
+        TicketView,
+        TICKETS_FILENAME,
+    )
+
+    await process_views(
+        ticket_form_views,
+        TicketFormView,
+        TICKET_FORMS_FILENAME,
+    )
+
+    _logger.info(guild.name)
+
+
+@client.event
+async def on_error(event, *args, **kwargs):
+    _logger.error(f"Произошла ошибка в событии: {event}")
+
+    _logger.error(f"Аргументы: {args}")
+    _logger.error(f"Ключевые аргументы: {kwargs}")
+
+    error_traceback = traceback.format_exc()
+    if error_traceback:
+        _logger.error(f"Трассировка ошибки:\n{error_traceback}")
+    else:
+        _logger.error("Трассировка ошибки недоступна.")
+
+    if event == 'on_message':
+        message = args[0]
+        _logger.error(f"Сообщение: {message.content}, Автор: {message.author}, Канал: {message.channel}")
+    elif event == 'on_command_error':
+        error = args[0]
+        ctx = error.ctx
+        _logger.error(f"Ошибка в команде: {ctx.command}, Пользователь: {ctx.author}, Сервер: {ctx.guild}")
+
+    exc_info = kwargs.get('exc_info')
+    if exc_info:
+        _logger.error(f"Тип ошибки: {exc_info[0].__name__}, Сообщение: {exc_info[1]}")
+
 
 @client.event
 async def on_member_join(member):
@@ -423,6 +448,7 @@ async def on_member_join(member):
     await member.add_roles(guild.get_role(STATUS_ROLE)) # Status Category
     await member.add_roles(guild.get_role(ACHIEVEMENTS_ROLE)) # Achievements Category
     await member.add_roles(guild.get_role(TECH_ROLE)) # Tech Category
+
 
 @client.event
 async def on_member_remove(member):
