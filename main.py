@@ -223,7 +223,7 @@ class TicketFormView(discord.ui.View):
 
             embed = discord.Embed(title=f'キヲツケ {i.user.name}!', description='Спасибо за отправку тикета!\nРуководство скоро свяжется с вами.\nПожалуйста, в подробностях распишите суть вашего обращения.\n\nЕсли вам никто не ответил вы можете нажать кнопку `🔔 Вызвать Руководство`', color=INVISIBLE_COLOR)
             embed.set_thumbnail(url=i.user.avatar)
-            ticket_view = TicketView(notification=notification)
+            ticket_view = TicketView(notification_id=notification.id)
             message = await channel.send(i.user.mention, embed=embed, view=ticket_view)
             ticket_views.append({
                 'message_id': message.id,
